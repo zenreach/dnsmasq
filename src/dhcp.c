@@ -103,6 +103,104 @@ static int make_fd(int port)
   return fd;
 }
 
+int arp_cached(uint32_t addr) {
+  pthread_mutex_lock(&daemon->arp_lock);
+  ip_list_t *cur = daemon->arp_recent;
+  while (cur) {
+    struct in_addr a, b;
+    a.s_addr = addr;
+    b.s_addr = cur->ip;
+    if (cur->ip == addr) {
+      pthread_mutex_unlock(&daemon->arp_lock);
+      return 1;
+    }
+    cur = cur->next;
+  }
+  pthread_mutex_unlock(&daemon->arp_lock);
+  return 0;
+}
+
+void *dhcp_arp_thread(void *data) {
+  pthread_mutex_init(&daemon->arp_lock, NULL);
+  while (1) {
+    int now = time(NULL);
+
+    FILE *fp;
+    if ((fp = fopen("/proc/net/arp", "r")) == NULL) {
+      fprintf(stderr, "Could not open /proc/net/arp\n");
+      return NULL;
+    }
+    char line[256];
+    char ip_str[32];
+    char mac[18];
+    char mask[32];
+    char device[64];
+    int hw_type, flags;
+    struct in_addr ip_addr;
+    // skip header
+    fgets(line, sizeof(line), fp);
+
+    ip_list_t *list = NULL, *last = NULL, *cur;
+    while (fgets(line, sizeof(line), fp)) {
+      cur = calloc(1, sizeof(ip_list_t));
+      // linked list append
+      if (last) {
+        last->next = cur;
+        last = cur;
+      } else {
+        last = list = cur;
+      }
+      if ((sscanf(line, "%s 0x%x 0x%x %s %s %s\n",
+                 ip_str, &hw_type, &flags, mac, mask, device)) != 6) {
+        break;
+      }
+
+      inet_aton(ip_str, &ip_addr);
+      cur->ip = ip_addr.s_addr;
+      cur->time = now;
+    }
+    fclose(fp);
+
+    // lock and merge with the global arp_recent list
+    pthread_mutex_lock(&daemon->arp_lock);
+    ip_list_t *ref;
+    ref = daemon->arp_recent;
+    if (ref) {
+      do {
+        cur = list;
+        do {
+          if (cur->ip == ref->ip) {
+            break;
+          }
+        } while ((cur = cur->next));
+        // if an entry in the old list isn't expired
+        // and isn't in the new list, copy it over
+        if (!cur && ref->time > now - 300) {
+          ip_list_t *new = malloc(sizeof(ip_list_t));
+          new->ip = ref->ip;
+          new->time = ref->time;
+          new->next = NULL;
+
+          last->next = new;
+          last = new;
+        }
+      } while ((ref = ref->next));
+    }
+    // free the old arp_recent list
+    cur = daemon->arp_recent;
+    while ((cur != NULL)) {
+      ip_list_t *tmp = cur;
+      cur = cur->next;
+      free(tmp);
+    }
+    // we just freed arp_recent, so replace it with our new list pointer
+    daemon->arp_recent = list;
+    pthread_mutex_unlock(&daemon->arp_lock);
+    sleep(15);
+  }
+  return NULL;
+}
+
 void dhcp_init(void)
 {
 #if defined(HAVE_BSD_NETWORK)
@@ -114,6 +212,8 @@ void dhcp_init(void)
     daemon->pxefd = make_fd(PXE_PORT);
   else
     daemon->pxefd = -1;
+
+  pthread_create(&daemon->arp_thread, NULL, dhcp_arp_thread, NULL);
 
 #if defined(HAVE_BSD_NETWORK)
   /* When we're not using capabilities, we need to do this here before
@@ -706,7 +806,7 @@ int address_allocate(struct dhcp_context *context,
 
 		if (!r) 
 		  {
-		    if ((count < max) && !option_bool(OPT_NO_PING) && icmp_ping(addr))
+		    if ((count < max) && arp_cached(addr.s_addr))
 		      {
 			/* address in use: perturb address selection so that we are
 			   less likely to try this address again. */

@@ -24,11 +24,11 @@ MANDIR        = $(PREFIX)/share/man
 LOCALEDIR     = $(PREFIX)/share/locale
 BUILDDIR      = $(SRC)
 DESTDIR       = 
-CFLAGS        = -Wall -W -O2
+CFLAGS        = -Wall -W -O2 -ggdb
 LDFLAGS       = 
 COPTS         = 
 RPM_OPT_FLAGS = 
-LIBS          = 
+LIBS          = -lpthread -ldl
 
 #################################################################
 

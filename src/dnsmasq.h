@@ -120,6 +120,7 @@ typedef unsigned long long u64;
 #ifndef HAVE_LINUX_NETWORK
 #  include <net/if_dl.h>
 #endif
+#include <pthread.h>
 
 #if defined(HAVE_LINUX_NETWORK)
 #include <linux/capability.h>
@@ -835,6 +836,12 @@ struct dhcp_relay {
   struct dhcp_relay *current, *next;
 };
 
+typedef struct _ip_list_t {
+  uint32_t ip;
+  int time;
+  struct _ip_list_t *next;
+} ip_list_t;
+
 extern struct daemon {
   /* datastuctures representing the command-line and 
      config file arguments. All set (including defaults)
@@ -965,6 +972,9 @@ extern struct daemon {
   /* utility string buffer, hold max sized IP address as string */
   char *addrbuff;
 
+  pthread_mutex_t arp_lock;
+  ip_list_t *arp_recent;
+  pthread_t arp_thread;
 } *daemon;
 
 /* cache.c */
